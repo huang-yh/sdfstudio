@@ -386,7 +386,6 @@ class VolumetricSampler(Sampler):
         density_fn: Optional[Callable[[TensorType[..., 3]], TensorType[..., 1]]] = None,
         scene_aabb: Optional[TensorType[2, 3]] = None,
     ) -> None:
-
         super().__init__()
         self.scene_aabb = scene_aabb
         self.density_fn = density_fn
@@ -638,7 +637,6 @@ class ErrorBoundedSampler(Sampler):
 
         # Algorithm 1
         while not_converge and total_iters < self.max_total_iters:
-
             with torch.no_grad():
                 new_sdf = sdf_fn(new_samples)
 
@@ -864,7 +862,6 @@ class NeuSSampler(Sampler):
         base_variance = self.base_variance
 
         while total_iters < self.num_upsample_steps:
-
             with torch.no_grad():
                 new_sdf = sdf_fn(new_samples)
 
@@ -1386,7 +1383,6 @@ class NeuSAccSampler(Sampler):
         assert inv_s is not None
 
         if step >= self.steps_warpup and step % self.steps_per_grid_update == 0:
-
             mask = self._binary.reshape(-1)
             # TODO voxels can't be recovered once it is pruned
             occupied_voxel = self.cube_coordinate[mask.reshape(-1)]

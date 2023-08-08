@@ -314,7 +314,7 @@ class RayBundle(TensorDataclass):
             camera_indices = self.camera_indices[..., None]
         else:
             camera_indices = None
-
+        
         shaped_raybundle_fields = self[..., None]
 
         frustums = Frustums(

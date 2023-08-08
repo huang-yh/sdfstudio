@@ -68,6 +68,9 @@ class AABBBoxCollider(SceneCollider):
             aabb: (2, 3) This is [min point (x,y,z), max point (x,y,z)]
         """
         # avoid divide by zero
+        ori_shape = rays_o.shape
+        rays_o = rays_o.reshape(-1, 3)
+        rays_d = rays_d.reshape(-1, 3)
         dir_fraction = 1.0 / (rays_d + 1e-6)
 
         # x
@@ -91,6 +94,9 @@ class AABBBoxCollider(SceneCollider):
         near_plane = self.near_plane if self.training else 0
         nears = torch.clamp(nears, min=near_plane)
         fars = torch.maximum(fars, nears + 1e-6)
+
+        nears = nears.reshape(*ori_shape[:-1])
+        fars = fars.reshape(*ori_shape[:-1])
 
         return nears, fars
 

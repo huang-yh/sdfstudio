@@ -119,6 +119,8 @@ class SurfaceModelConfig(ModelConfig):
     """whether to use near and far collider from command line"""
     scene_contraction_norm: Literal["inf", "l2"] = "inf"
     """Which norm to use for the scene contraction."""
+    scene_contraction_activate: bool = True
+    use_lpips: bool = True
 
 
 class SurfaceModel(Model):
@@ -141,7 +143,8 @@ class SurfaceModel(Model):
         else:
             raise ValueError("Invalid scene contraction norm")
 
-        self.scene_contraction = SceneContraction(order=order)
+        self.scene_contraction = SceneContraction(
+            order=order, activate=self.config.scene_contraction_activate)
 
         # Can we also use contraction for sdf?
         # Fields
@@ -221,7 +224,8 @@ class SurfaceModel(Model):
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity()
+        if self.config.use_lpips:
+            self.lpips = LearnedPerceptualImagePatchSimilarity()
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -307,9 +311,10 @@ class SurfaceModel(Model):
                 ray_samples.frustums.get_start_positions()
             ),  # used for creating visiblity mask
             "directions_norm": ray_bundle.directions_norm,  # used to scale z_vals for free space and sdf loss
+            "inv_s": self.field.deviation_network.get_variance().detach().item()
         }
 
-        if self.training:
+        if  self.training or True:
             grad_points = field_outputs[FieldHeadNames.GRADIENT]
             points_norm = field_outputs["points_norm"]
             outputs.update({"eik_grad": grad_points, "points_norm": points_norm})

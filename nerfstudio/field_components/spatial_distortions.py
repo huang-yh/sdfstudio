@@ -59,11 +59,15 @@ class SceneContraction(SpatialDistortion):
 
     """
 
-    def __init__(self, order: Optional[Union[float, int]] = None) -> None:
+    def __init__(self, order: Optional[Union[float, int]] = None, activate = True) -> None:
         super().__init__()
         self.order = order
+        self.activate = activate
 
     def forward(self, positions):
+        if not self.activate:
+            return positions
+
         def contract(x):
             mag = torch.linalg.norm(x, ord=self.order, dim=-1)
             mask = mag >= 1
