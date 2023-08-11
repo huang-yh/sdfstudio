@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Type
+from typing_extensions import Literal
 
 import torch
 
@@ -56,6 +57,13 @@ class NeuSCustomModelConfig(SurfaceModelConfig):
     sdf_field: SDFCustomFieldConfig = SDFCustomFieldConfig()
     """Config for SDF Field"""
 
+    depth_method: Literal["median", "expected"] = "expected"
+
+    # beta_hand_tune: bool = False
+    # beta_min: float = 2.0
+    # beta_max: float = 12.0
+    # total_iters: int = 12 * 3516
+
 
 class NeuSCustomModel(SurfaceModel):
     """NeuS model
@@ -70,6 +78,10 @@ class NeuSCustomModel(SurfaceModel):
         """Set the fields and modules."""
         super().populate_modules()
 
+        print(
+            f"NeuSCustomModel Config: num_samples {self.config.num_samples}, num_samples_importance {self.config.num_samples_importance}, num_up_sample_steps {self.config.num_up_sample_steps}"
+        )
+
         self.sampler = NeuSSampler(
             num_samples=self.config.num_samples,
             num_samples_importance=self.config.num_samples_importance,
@@ -77,10 +89,16 @@ class NeuSCustomModel(SurfaceModel):
             num_samples_outside=self.config.num_samples_outside,
             num_upsample_steps=self.config.num_up_sample_steps,
             base_variance=self.config.base_variance,
+            # beta_hand_tune=self.config.beta_hand_tune,
+            # beta_min=self.config.beta_min,
+            # beta_max=self.config.beta_max
         )
 
         # flag
         self.anneal_end = 5000
+        # self.beta = self.config.beta_min
+
+        self.renderer_depth.method = self.config.depth_method
 
     # def get_training_callbacks(
     #     self, training_callback_attributes: TrainingCallbackAttributes
@@ -104,6 +122,10 @@ class NeuSCustomModel(SurfaceModel):
     #     return callbacks
 
     def sample_and_forward_field(self, ray_bundle: RayBundle) -> Dict:
+        # if self.config.beta_hand_tune:
+        #     beta = self.beta
+        # else:
+        #     beta = None
         ray_samples = self.sampler(ray_bundle, sdf_fn=self.field.get_sdf)
         # save_points("a.ply", ray_samples.frustums.get_start_positions().reshape(-1, 3).detach().cpu().numpy())
         field_outputs = self.field(ray_samples, return_alphas=True)
@@ -128,11 +150,18 @@ class NeuSCustomModel(SurfaceModel):
             metrics_dict["inv_s"] = 1.0 / self.field.deviation_network.get_variance().item()
 
         return metrics_dict
-    
+
     def forward(self, ray_bundle: RayBundle, iter: int = None) -> Dict[str, torch.Tensor]:
         if self.anneal_end > 0 and self.training and iter is not None:
+
             def set_anneal(step):
                 anneal = min([1.0, step / self.anneal_end])
                 self.field.set_cos_anneal_ratio(anneal)
+
             set_anneal(iter)
+        # if self.config.beta_hand_tune and self.training and iter is not None:
+        #     self.beta = min(
+        #         self.config.beta_max,
+        #         self.config.beta_min + (self.config.beta_max - self.config.beta_min) * iter / self.config.total_iters,
+        #     )
         return super().forward(ray_bundle)

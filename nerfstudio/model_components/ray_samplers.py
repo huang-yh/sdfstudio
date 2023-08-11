@@ -821,6 +821,9 @@ class NeuSSampler(Sampler):
         num_upsample_steps: int = 4,
         base_variance: float = 64,
         single_jitter: bool = True,
+        # beta_hand_tune=False,
+        # beta_min=2.0,
+        # beta_max=12.0
     ) -> None:
         super().__init__()
         self.num_samples = num_samples
@@ -829,6 +832,9 @@ class NeuSSampler(Sampler):
         self.num_upsample_steps = num_upsample_steps
         self.base_variance = base_variance
         self.single_jitter = single_jitter
+        # self.beta_hand_tune = beta_hand_tune
+        # self.beta_min = beta_min
+        # self.beta_max = beta_max
 
         # samplers
         self.uniform_sampler = UniformSampler(single_jitter=single_jitter)
@@ -847,6 +853,7 @@ class NeuSSampler(Sampler):
         ray_bundle: Optional[RayBundle] = None,
         sdf_fn: Optional[Callable] = None,
         ray_samples: Optional[RaySamples] = None,
+        beta = None,
     ) -> Union[Tuple[RaySamples, torch.Tensor], RaySamples]:
         assert ray_bundle is not None
         assert sdf_fn is not None
@@ -873,8 +880,12 @@ class NeuSSampler(Sampler):
                 sdf = new_sdf
 
             # compute with fix variances
+            if beta is not None:
+                inv_s = beta
+            else:
+                inv_s = base_variance * 2**total_iters
             alphas = self.rendering_sdf_with_fixed_inv_s(
-                ray_samples, sdf.reshape(ray_samples.shape), inv_s=base_variance * 2**total_iters
+                ray_samples, sdf.reshape(ray_samples.shape), inv_s=inv_s
             )
 
             weights = ray_samples.get_weights_from_alphas(alphas[..., None])
