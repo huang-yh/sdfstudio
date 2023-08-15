@@ -387,12 +387,12 @@ class SDFCustomField(Field):
     #     self.hash_encoding_mask[:] = 1.0
     #     self.hash_encoding_mask[level * self.features_per_level :] = 0
 
-    def pre_compute_density_color(self, bev):
+    def pre_compute_density_color(self, bev, dtype=torch.float):
         assert bev.dim() == 3
         bev = bev.unflatten(1, (self.bev_size, self.bev_size))
         density_color = self.density_net(bev).reshape(*bev.shape[:-1], self.z_size, -1)
         density_color = density_color.permute(0, 4, 1, 2, 3)  # bs, C, h, w, d
-        self.density_color = density_color
+        self.density_color = density_color.to(dtype)
         # print(f'type of self.density_color: {self.density_color.dtype}')
 
     def forward_geonetwork(self, inputs):
