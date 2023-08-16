@@ -205,9 +205,9 @@ class SingleVarianceNetwork(nn.Module):
         nn (_type_): init value in NeuS variance network
     """
 
-    def __init__(self, init_val):
+    def __init__(self, init_val, learnable=True):
         super(SingleVarianceNetwork, self).__init__()
-        self.register_parameter("variance", nn.Parameter(init_val * torch.ones(1), requires_grad=True))
+        self.register_parameter("variance", nn.Parameter(init_val * torch.ones(1), requires_grad=learnable))
 
     def forward(self, x):
         """Returns current variance value"""
@@ -297,6 +297,8 @@ class SDFCustomFieldConfig(FieldConfig):
     density_layers: int = 2
     sh_deg: int = 2
     sh_act: str = "relu"
+    
+    beta_learnable: bool = True
 
 
 class SDFCustomField(Field):
@@ -370,7 +372,8 @@ class SDFCustomField(Field):
 
         # TODO use different name for beta_init for config
         # deviation_network to compute alpha from sdf from NeuS
-        self.deviation_network = SingleVarianceNetwork(init_val=self.config.beta_init)
+        self.deviation_network = SingleVarianceNetwork(
+            init_val=self.config.beta_init, learnable=self.config.beta_learnable)
 
         self.softplus = nn.Softplus(beta=100)
         self.relu = nn.ReLU()

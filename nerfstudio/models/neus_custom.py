@@ -59,10 +59,10 @@ class NeuSCustomModelConfig(SurfaceModelConfig):
 
     depth_method: Literal["median", "expected"] = "expected"
 
-    # beta_hand_tune: bool = False
-    # beta_min: float = 2.0
-    # beta_max: float = 12.0
-    # total_iters: int = 12 * 3516
+    beta_hand_tune: bool = False
+    beta_min: float = 2.0
+    beta_max: float = 12.0
+    total_iters: int = 12 * 3516
 
 
 class NeuSCustomModel(SurfaceModel):
@@ -159,9 +159,10 @@ class NeuSCustomModel(SurfaceModel):
                 self.field.set_cos_anneal_ratio(anneal)
 
             set_anneal(iter)
-        # if self.config.beta_hand_tune and self.training and iter is not None:
-        #     self.beta = min(
-        #         self.config.beta_max,
-        #         self.config.beta_min + (self.config.beta_max - self.config.beta_min) * iter / self.config.total_iters,
-        #     )
+        if self.config.beta_hand_tune and self.training and iter is not None:
+            beta = min(
+                self.config.beta_max,
+                self.config.beta_min + (self.config.beta_max - self.config.beta_min) * iter / self.config.total_iters,
+            )
+            self.field.deviation_network.variance.data = beta * torch.ones(1, device=ray_bundle.origins.device) 
         return super().forward(ray_bundle)
