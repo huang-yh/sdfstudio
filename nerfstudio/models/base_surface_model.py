@@ -30,6 +30,7 @@ from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from torchtyping import TensorType
 from typing_extensions import Literal
+
 from nerfstudio.cameras.rays import RayBundle, RaySamples
 from nerfstudio.field_components.encodings import NeRFEncoding
 from nerfstudio.field_components.field_heads import FieldHeadNames
@@ -143,8 +144,7 @@ class SurfaceModel(Model):
         else:
             raise ValueError("Invalid scene contraction norm")
 
-        self.scene_contraction = SceneContraction(
-            order=order, activate=self.config.scene_contraction_activate)
+        self.scene_contraction = SceneContraction(order=order, activate=self.config.scene_contraction_activate)
 
         # Can we also use contraction for sdf?
         # Fields
@@ -206,6 +206,9 @@ class SurfaceModel(Model):
         self.renderer_rgb = RGBRenderer(background_color=background_color)
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer(method="expected")
+
+        # self.renderer_depth_median = DepthRenderer(method="median")
+
         self.renderer_normal = SemanticRenderer()
         # patch warping
         self.patch_warping = PatchWarping(
@@ -291,6 +294,8 @@ class SurfaceModel(Model):
 
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
+        # depth_median = self.renderer_depth_median(weights=weights, ray_samples=ray_samples)
+        # depth_median = depth_median / ray_bundle.directions_norm
         # the rendered depth is point-to-point distance and we should convert to depth
         depth = depth / ray_bundle.directions_norm
 
@@ -305,16 +310,17 @@ class SurfaceModel(Model):
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
+            # "depth_median": depth_median,
             "normal": normal,
             "weights": weights,
             "ray_points": self.scene_contraction(
                 ray_samples.frustums.get_start_positions()
             ),  # used for creating visiblity mask
             "directions_norm": ray_bundle.directions_norm,  # used to scale z_vals for free space and sdf loss
-            "inv_s": self.field.deviation_network.get_variance().detach().item()
+            "inv_s": self.field.deviation_network.get_variance().detach().item(),
         }
 
-        if  self.training or True:
+        if self.training or True:
             grad_points = field_outputs[FieldHeadNames.GRADIENT]
             points_norm = field_outputs["points_norm"]
             outputs.update({"eik_grad": grad_points, "points_norm": points_norm})
