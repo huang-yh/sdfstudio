@@ -207,7 +207,7 @@ class SurfaceModel(Model):
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer(method="expected")
 
-        # self.renderer_depth_median = DepthRenderer(method="median")
+        self.renderer_depth_median = DepthRenderer(method="median")
 
         self.renderer_normal = SemanticRenderer()
         # patch warping
@@ -294,8 +294,8 @@ class SurfaceModel(Model):
 
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
-        # depth_median = self.renderer_depth_median(weights=weights, ray_samples=ray_samples)
-        # depth_median = depth_median / ray_bundle.directions_norm
+        depth_median = self.renderer_depth_median(weights=weights, ray_samples=ray_samples)
+        depth_median = depth_median / ray_bundle.directions_norm
         # the rendered depth is point-to-point distance and we should convert to depth
         depth = depth / ray_bundle.directions_norm
 
@@ -310,7 +310,7 @@ class SurfaceModel(Model):
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
-            # "depth_median": depth_median,
+            "depth_median": depth_median,
             "normal": normal,
             "weights": weights,
             "ray_points": self.scene_contraction(
