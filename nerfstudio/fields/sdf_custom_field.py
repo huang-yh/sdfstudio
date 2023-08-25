@@ -297,7 +297,7 @@ class SDFCustomFieldConfig(FieldConfig):
     density_layers: int = 2
     sh_deg: int = 2
     sh_act: str = "relu"
-    
+
     beta_learnable: bool = True
 
 
@@ -351,16 +351,17 @@ class SDFCustomField(Field):
         self.color_dims = self.config.color_dims
         density_net = []
         for i in range(self.density_layers - 1):
-            density_net.extend([nn.ReLU(True), nn.Linear(self.embed_dims, self.embed_dims)])
-        density_net.extend([nn.ReLU(True), nn.Linear(self.embed_dims, (1 + self.color_dims) * self.z_size)])
+            density_net.extend([nn.Softplus(), nn.Linear(self.embed_dims, self.embed_dims)])
+        density_net.extend([nn.Softplus(), nn.Linear(self.embed_dims, (1 + self.color_dims) * self.z_size)])
         nn.init.normal_(
-            density_net[-1].weight[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)], 0, 0.0001
+            density_net[-1].weight[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)], 0, 0.001
         )
         d_grids = torch.arange(self.z_size, dtype=torch.float)
         hwd_grids = torch.cat([torch.zeros(self.z_size, 2), d_grids.unsqueeze(-1)], dim=-1)
         meters = self.mapping.grid2meter(hwd_grids)
         z_meters = meters[:, 2]
         sdf_init = z_meters + 1.6
+        # sdf_init = sdf_init / (self.config.z_ranges[2] - self.config.z_ranges[0]) * 3
         density_net[-1].bias[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)].data = sdf_init
         density_net = nn.Sequential(*density_net)
         self.density_net = density_net
@@ -373,7 +374,8 @@ class SDFCustomField(Field):
         # TODO use different name for beta_init for config
         # deviation_network to compute alpha from sdf from NeuS
         self.deviation_network = SingleVarianceNetwork(
-            init_val=self.config.beta_init, learnable=self.config.beta_learnable)
+            init_val=self.config.beta_init, learnable=self.config.beta_learnable
+        )
 
         self.softplus = nn.Softplus(beta=100)
         self.relu = nn.ReLU()

@@ -37,6 +37,8 @@ from nerfstudio.model_components.ray_samplers import NeuSSampler
 from nerfstudio.models.base_surface_model import SurfaceModel, SurfaceModelConfig
 from nerfstudio.fields.sdf_custom_field import SDFCustomFieldConfig
 
+from mmengine import MMLogger
+
 
 @dataclass
 class NeuSCustomModelConfig(SurfaceModelConfig):
@@ -63,6 +65,13 @@ class NeuSCustomModelConfig(SurfaceModelConfig):
     beta_min: float = 2.0
     beta_max: float = 12.0
     total_iters: int = 12 * 3516
+
+    anneal_aabb: bool = False
+    aabb_min_near: float = 10.0
+    aabb_max_near: float = 0.2
+    aabb_min_far_frac: float = 0.25
+    aabb_every_iters: int = 3516
+    aabb_original: List[float] = field(default_factory=lambda: [-81.0, -81.0, -4.0, 81.0, 81.0, 12.0])
 
 
 class NeuSCustomModel(SurfaceModel):
@@ -99,6 +108,8 @@ class NeuSCustomModel(SurfaceModel):
         # self.beta = self.config.beta_min
 
         self.renderer_depth.method = self.config.depth_method
+        aabb = self.config.aabb_original
+        self.aabb = torch.tensor([aabb[:3], aabb[3:]])
 
     # def get_training_callbacks(
     #     self, training_callback_attributes: TrainingCallbackAttributes
@@ -159,10 +170,27 @@ class NeuSCustomModel(SurfaceModel):
                 self.field.set_cos_anneal_ratio(anneal)
 
             set_anneal(iter)
+
         if self.config.beta_hand_tune and self.training and iter is not None:
             beta = min(
                 self.config.beta_max,
                 self.config.beta_min + (self.config.beta_max - self.config.beta_min) * iter / self.config.total_iters,
             )
-            self.field.deviation_network.variance.data = beta * torch.ones(1, device=ray_bundle.origins.device) 
+            self.field.deviation_network.variance.data = beta * torch.ones(1, device=ray_bundle.origins.device)
+
+        if self.config.anneal_aabb and iter is not None and iter % self.config.aabb_every_iters == 0:
+            near = max(
+                self.config.aabb_max_near,
+                self.config.aabb_min_near
+                - iter / self.config.total_iters * (self.config.aabb_min_near - self.config.aabb_max_near),
+            )
+            aabb_coef = min(
+                1.0,
+                self.config.aabb_min_far_frac + iter / self.config.total_iters * (1 - self.config.aabb_min_far_frac),
+            )
+            self.collider.near_plane = near
+            self.collider.scene_box.aabb[:, :2] = aabb_coef * self.aabb[:, :2]
+            logger = MMLogger.get_instance("selfocc")
+            logger.info(f"aabb_annealed! near: {self.collider.near_plane}, aabb: {self.collider.scene_box.aabb}")
+
         return super().forward(ray_bundle)

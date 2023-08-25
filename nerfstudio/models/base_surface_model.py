@@ -297,6 +297,7 @@ class SurfaceModel(Model):
         # depth_median = self.renderer_depth_median(weights=weights, ray_samples=ray_samples)
         # depth_median = depth_median / ray_bundle.directions_norm
         # the rendered depth is point-to-point distance and we should convert to depth
+        surface_points = ray_bundle.origins + ray_bundle.directions * depth
         depth = depth / ray_bundle.directions_norm
 
         # remove the rays that don't intersect with the surface
@@ -311,6 +312,7 @@ class SurfaceModel(Model):
             "accumulation": accumulation,
             "depth": depth,
             # "depth_median": depth_median,
+            "surface_points": surface_points,
             "normal": normal,
             "weights": weights,
             "ray_points": self.scene_contraction(
