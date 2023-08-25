@@ -299,6 +299,7 @@ class SDFCustomFieldConfig(FieldConfig):
     sh_act: str = "relu"
 
     beta_learnable: bool = True
+    second_derivative: bool = False
 
 
 class SDFCustomField(Field):
@@ -615,6 +616,16 @@ class SDFCustomField(Field):
                 retain_graph=True,
                 only_inputs=True,
             )[0]
+            if self.config.second_derivative:
+                d_output_2 = torch.ones_like(gradients, requires_grad=False, device=sdf.device)
+                second_grad = torch.autograd.grad(
+                    outputs=gradients,
+                    inputs=inputs,
+                    grad_outputs=d_output_2,
+                    create_graph=True,
+                    retain_graph=True,
+                    only_inputs=True,
+                )[0]
             sampled_sdf = None
 
         rgb = self.get_colors(inputs, directions_flat, gradients, geo_feature)
@@ -639,6 +650,8 @@ class SDFCustomField(Field):
                 # "sampled_sdf": sampled_sdf,
             }
         )
+        if self.config.second_derivative:
+            outputs.update({"second_grad": second_grad})
 
         if return_alphas:
             # TODO use mid point sdf for NeuS
