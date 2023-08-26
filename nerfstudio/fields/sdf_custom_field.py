@@ -19,7 +19,7 @@ Modified by Yuanhui Huang.
 
 import math
 from dataclasses import dataclass, field
-from typing import Optional, Type, Union, List
+from typing import List, Optional, Type, Union
 
 import numpy as np
 import torch
@@ -46,11 +46,10 @@ except ImportError:
     # tinycudann module doesn't exist
     pass
 
-from .sh_render import SHRender
-
 # import .cuda_gridsample_grad2.cuda_gridsample as cudagrid
 # from . import cuda_gridsample_grad2.cuda_gridsample as cudagrid
 from .cuda_gridsample_grad2 import cuda_gridsample as cudagrid
+from .sh_render import SHRender
 
 
 class GridMeterMapping:
@@ -355,7 +354,7 @@ class SDFCustomField(Field):
             density_net.extend([nn.Softplus(), nn.Linear(self.embed_dims, self.embed_dims)])
         density_net.extend([nn.Softplus(), nn.Linear(self.embed_dims, (1 + self.color_dims) * self.z_size)])
         nn.init.normal_(
-            density_net[-1].weight[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)], 0, 0.001
+            density_net[-1].weight[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)], 0, 0.0001
         )
         d_grids = torch.arange(self.z_size, dtype=torch.float)
         hwd_grids = torch.cat([torch.zeros(self.z_size, 2), d_grids.unsqueeze(-1)], dim=-1)
@@ -617,15 +616,19 @@ class SDFCustomField(Field):
                 only_inputs=True,
             )[0]
             if self.config.second_derivative:
-                d_output_2 = torch.ones_like(gradients, requires_grad=False, device=sdf.device)
-                second_grad = torch.autograd.grad(
-                    outputs=gradients,
-                    inputs=inputs,
-                    grad_outputs=d_output_2,
-                    create_graph=True,
-                    retain_graph=True,
-                    only_inputs=True,
-                )[0]
+                second_grads = []
+                for idx in range(3):
+                    d_output = torch.ones_like(gradients[..., idx], requires_grad=False, device=sdf.device)
+                    second_grad = torch.autograd.grad(
+                        outputs=gradients[..., idx],
+                        inputs=inputs,
+                        grad_outputs=d_output,
+                        create_graph=True,
+                        retain_graph=True,
+                        only_inputs=True,
+                    )[0]
+                    second_grads.append(second_grad)
+                second_grad = torch.stack(second_grads, dim=-1)
             sampled_sdf = None
 
         rgb = self.get_colors(inputs, directions_flat, gradients, geo_feature)
