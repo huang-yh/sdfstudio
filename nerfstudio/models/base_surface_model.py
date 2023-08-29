@@ -285,6 +285,7 @@ class SurfaceModel(Model):
         return field_outputs
 
     def get_outputs(self, ray_bundle: RayBundle) -> Dict:
+        fars = ray_bundle.fars / ray_bundle.directions_norm
         samples_and_field_outputs = self.sample_and_forward_field(ray_bundle=ray_bundle)
 
         # Shotscuts
@@ -320,6 +321,7 @@ class SurfaceModel(Model):
             ),  # used for creating visiblity mask
             "directions_norm": ray_bundle.directions_norm,  # used to scale z_vals for free space and sdf loss
             "inv_s": self.field.deviation_network.get_variance().detach().item(),
+            "fars": fars
         }
 
         if self.training or True:

@@ -591,6 +591,7 @@ class SDFCustomField(Field):
         points_norm = inputs.norm(dim=-1)
         # compute gradient in constracted space
         inputs.requires_grad_(True)
+        self.density_color.requires_grad_(True)
         with torch.enable_grad():
             h = self.forward_geonetwork(inputs)
             sdf, geo_feature = torch.split(h, [1, self.color_dims], dim=-1)
@@ -618,9 +619,11 @@ class SDFCustomField(Field):
             if self.config.second_derivative:
                 second_grads = []
                 for idx in range(3):
+                    with torch.enable_grad():
+                        g_slice = gradients[..., idx]
                     d_output = torch.ones_like(gradients[..., idx], requires_grad=False, device=sdf.device)
                     second_grad = torch.autograd.grad(
-                        outputs=gradients[..., idx],
+                        outputs=g_slice,
                         inputs=inputs,
                         grad_outputs=d_output,
                         create_graph=True,
