@@ -285,19 +285,16 @@ class SDFCustomFieldConfig(FieldConfig):
     use_position_encoding: bool = True
     """whether to use positional encoding as input for geometric network"""
 
-    mapping_args: Dict[str, Any] = to_immutable_dict(
-        dict(
-            nonlinear_mode="linear_upscale",
-            h_size=[128, 32],
-            h_range=[51.2, 28.8],
-            h_half=False,
-            w_size=[128, 32],
-            w_range=[51.2, 28.8],
-            w_half=False,
-            d_size=[20, 10],
-            d_range=[-4.0, 4.0, 12.0],
-        )
-    )
+    mapping_args: Dict[str, Any] = to_immutable_dict(dict(
+        nonlinear_mode="linear_upscale",
+        h_size=[128, 32],
+        h_range=[51.2, 28.8],
+        h_half=False,
+        w_size=[128, 32],
+        w_range=[51.2, 28.8],
+        w_half=False,
+        d_size=[20, 10],
+        d_range=[-4.0, 4.0, 12.0],))
 
     # bev_inner: int = 128
     # bev_outer: int = 32
@@ -316,6 +313,7 @@ class SDFCustomFieldConfig(FieldConfig):
 
     beta_learnable: bool = True
     second_derivative: bool = False
+    tpv: bool = False
 
 
 class SDFCustomField(Field):
@@ -353,8 +351,9 @@ class SDFCustomField(Field):
             # self.config.z_ranges,
             **self.config.mapping_args
         )
-        self.bev_size = [self.mapping.size_h, self.mapping.size_w]
         self.z_size = self.mapping.size_d
+        self.h_size = self.mapping.size_h
+        self.w_size = self.mapping.size_w
 
         self.color_converter = SHRender
         self.sh_deg = self.config.sh_deg
@@ -373,17 +372,20 @@ class SDFCustomField(Field):
         density_net = []
         for i in range(self.density_layers - 1):
             density_net.extend([nn.Softplus(), nn.Linear(self.embed_dims, self.embed_dims)])
-        density_net.extend([nn.Softplus(), nn.Linear(self.embed_dims, (1 + self.color_dims) * self.z_size)])
-        nn.init.normal_(
-            density_net[-1].weight[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)], 0, 0.0001
-        )
-        d_grids = torch.arange(self.z_size, dtype=torch.float)
-        hwd_grids = torch.cat([torch.zeros(self.z_size, 2), d_grids.unsqueeze(-1)], dim=-1)
-        meters = self.mapping.grid2meter(hwd_grids)
-        z_meters = meters[:, 2]
-        sdf_init = z_meters + 1.6
-        # sdf_init = sdf_init / (self.config.z_ranges[2] - self.config.z_ranges[0]) * 3
-        density_net[-1].bias[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)].data = sdf_init
+        if not self.config.tpv:
+            density_net.extend([nn.Softplus(), nn.Linear(self.embed_dims, (1 + self.color_dims) * self.z_size)])
+            nn.init.normal_(
+                density_net[-1].weight[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)], 0, 0.0001
+            )
+            d_grids = torch.arange(self.z_size, dtype=torch.float)
+            hwd_grids = torch.cat([torch.zeros(self.z_size, 2), d_grids.unsqueeze(-1)], dim=-1)
+            meters = self.mapping.grid2meter(hwd_grids)
+            z_meters = meters[:, 2]
+            sdf_init = z_meters + 1.6
+            # sdf_init = sdf_init / (self.config.z_ranges[2] - self.config.z_ranges[0]) * 3
+            density_net[-1].bias[range(0, (1 + self.color_dims) * self.z_size, 1 + self.color_dims)].data = sdf_init
+        else:
+            density_net.extend([nn.Softplus(), nn.Linear(self.embed_dims, 1 + self.color_dims)])
         density_net = nn.Sequential(*density_net)
         self.density_net = density_net
 
@@ -414,13 +416,26 @@ class SDFCustomField(Field):
     #     self.hash_encoding_mask[level * self.features_per_level :] = 0
 
     def pre_compute_density_color(self, bev, dtype=torch.float):
-        assert bev.dim() == 3
-        bev = bev.unflatten(1, self.bev_size)
-        density_color = self.density_net(bev).reshape(*bev.shape[:-1], self.z_size, -1)
-        density_color = density_color.permute(0, 4, 1, 2, 3)  # bs, C, h, w, d
-        self.density_color = density_color.to(dtype)
-        # print(f'type of self.density_color: {self.density_color.dtype}')
+        if not self.config.tpv:
+            assert bev.dim() == 3
+            bev = bev.unflatten(1, (self.h_size, self.w_size))
+            density_color = self.density_net(bev).reshape(*bev.shape[:-1], self.z_size, -1)
+            density_color = density_color.permute(0, 4, 1, 2, 3)  # bs, C, h, w, d
+        else:
+            tpv_hw, tpv_zh, tpv_wz = bev
+            tpv_hw = tpv_hw.reshape(-1, self.h_size, self.w_size, 1, self.embed_dims)
+            tpv_hw = tpv_hw.expand(-1, -1, -1, self.z_size, -1)
 
+            tpv_zh = tpv_zh.reshape(-1, self.z_size, self.h_size, 1, self.embed_dims).permute(0, 2, 3, 1, 4)
+            tpv_zh = tpv_zh.expand(-1, -1, self.w_size, -1, -1)
+
+            tpv_wz = tpv_wz.reshape(-1, self.w_size, self.z_size, 1, self.embed_dims).permute(0, 3, 1, 2, 4)
+            tpv_wz = tpv_wz.expand(-1, self.h_size, -1, -1, -1)
+
+            tpv = tpv_hw + tpv_zh + tpv_wz
+            density_color = self.density_net(tpv).permute(0, 4, 1, 2, 3)
+        self.density_color = density_color.to(dtype)
+        
     def forward_geonetwork(self, inputs):
         """forward the geonetwork"""
         grid = self.mapping.meter2grid(inputs, True)
