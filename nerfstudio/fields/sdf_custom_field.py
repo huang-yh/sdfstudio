@@ -19,7 +19,7 @@ Modified by Yuanhui Huang.
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Type, Union, Dict, Any
+from typing import Any, Dict, List, Optional, Type, Union
 
 import numpy as np
 import torch
@@ -30,6 +30,7 @@ from torchtyping import TensorType
 from typing_extensions import Literal
 
 from nerfstudio.cameras.rays import RaySamples
+from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.encodings import (
     NeRFEncoding,
@@ -39,7 +40,6 @@ from nerfstudio.field_components.encodings import (
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, FieldConfig
-from nerfstudio.configs.config_utils import to_immutable_dict
 
 try:
     import tinycudann as tcnn
@@ -50,9 +50,8 @@ except ImportError:
 # import .cuda_gridsample_grad2.cuda_gridsample as cudagrid
 # from . import cuda_gridsample_grad2.cuda_gridsample as cudagrid
 from .cuda_gridsample_grad2 import cuda_gridsample as cudagrid
-from .sh_render import SHRender
 from .mappings import GridMeterMapping
-
+from .sh_render import SHRender
 
 # class GridMeterMapping:
 #     def __init__(
@@ -285,16 +284,19 @@ class SDFCustomFieldConfig(FieldConfig):
     use_position_encoding: bool = True
     """whether to use positional encoding as input for geometric network"""
 
-    mapping_args: Dict[str, Any] = to_immutable_dict(dict(
-        nonlinear_mode="linear_upscale",
-        h_size=[128, 32],
-        h_range=[51.2, 28.8],
-        h_half=False,
-        w_size=[128, 32],
-        w_range=[51.2, 28.8],
-        w_half=False,
-        d_size=[20, 10],
-        d_range=[-4.0, 4.0, 12.0],))
+    mapping_args: Dict[str, Any] = to_immutable_dict(
+        dict(
+            nonlinear_mode="linear_upscale",
+            h_size=[128, 32],
+            h_range=[51.2, 28.8],
+            h_half=False,
+            w_size=[128, 32],
+            w_range=[51.2, 28.8],
+            w_half=False,
+            d_size=[20, 10],
+            d_range=[-4.0, 4.0, 12.0],
+        )
+    )
 
     # bev_inner: int = 128
     # bev_outer: int = 32
@@ -434,8 +436,8 @@ class SDFCustomField(Field):
 
             tpv = tpv_hw + tpv_zh + tpv_wz
             density_color = self.density_net(tpv).permute(0, 4, 1, 2, 3)
-        self.density_color = density_color#.to(dtype)
-        
+        self.density_color = density_color  # .to(dtype)
+
     def forward_geonetwork(self, inputs):
         """forward the geonetwork"""
         grid = self.mapping.meter2grid(inputs, True)
@@ -443,7 +445,7 @@ class SDFCustomField(Field):
         # grid[..., :2] = grid[..., :2] / (self.bev_size - 1)
         # grid[..., 2:] = grid[..., 2:] / (self.z_size - 1)
         grid = 2 * grid - 1
-        grid = grid.reshape(1, -1, 1, 1, 3)
+        grid = grid.reshape(1, -1, 1, 1, 3).half()
 
         # density_color = F.grid_sample(
         #     self.density_color, grid[..., [2, 1, 0]], mode="bilinear", align_corners=True
@@ -463,7 +465,7 @@ class SDFCustomField(Field):
         # grid[..., :2] = grid[..., :2] / (self.bev_size - 1)
         # grid[..., 2:] = grid[..., 2:] / (self.z_size - 1)
         grid = 2 * grid - 1
-        grid = grid.reshape(1, -1, 1, 1, 3)
+        grid = grid.reshape(1, -1, 1, 1, 3).half()
 
         # density_color = F.grid_sample(
         #     self.density_color[:, :1, ...], grid[..., [2, 1, 0]], mode="bilinear", align_corners=True
