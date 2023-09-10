@@ -445,7 +445,7 @@ class SDFCustomField(Field):
         # grid[..., :2] = grid[..., :2] / (self.bev_size - 1)
         # grid[..., 2:] = grid[..., 2:] / (self.z_size - 1)
         grid = 2 * grid - 1
-        grid = grid.reshape(1, -1, 1, 1, 3).half()
+        grid = grid.reshape(1, -1, 1, 1, 3).to(self.density_color.dtype)
 
         # density_color = F.grid_sample(
         #     self.density_color, grid[..., [2, 1, 0]], mode="bilinear", align_corners=True
@@ -465,7 +465,7 @@ class SDFCustomField(Field):
         # grid[..., :2] = grid[..., :2] / (self.bev_size - 1)
         # grid[..., 2:] = grid[..., 2:] / (self.z_size - 1)
         grid = 2 * grid - 1
-        grid = grid.reshape(1, -1, 1, 1, 3).half()
+        grid = grid.reshape(1, -1, 1, 1, 3).to(self.density_color.dtype)
 
         # density_color = F.grid_sample(
         #     self.density_color[:, :1, ...], grid[..., [2, 1, 0]], mode="bilinear", align_corners=True
