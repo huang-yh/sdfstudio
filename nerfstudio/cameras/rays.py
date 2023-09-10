@@ -220,9 +220,9 @@ class RaySamples(TensorDataclass):
         Returns:
             Weights for each sample
         """
-
+        eps = 1e-4  # 1e-7
         transmittance = torch.cumprod(
-            torch.cat([torch.ones((*alphas.shape[:1], 1, 1), device=alphas.device), 1.0 - alphas + 1e-7], 1), 1
+            torch.cat([torch.ones((*alphas.shape[:1], 1, 1), device=alphas.device), 1.0 - alphas + eps], 1), 1
         )  # [..., "num_samples"]
 
         weights = alphas * transmittance[:, :-1, :]  # [..., "num_samples"]
@@ -314,7 +314,7 @@ class RayBundle(TensorDataclass):
             camera_indices = self.camera_indices[..., None]
         else:
             camera_indices = None
-        
+
         shaped_raybundle_fields = self[..., None]
 
         frustums = Frustums(

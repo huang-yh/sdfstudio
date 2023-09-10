@@ -434,7 +434,7 @@ class SDFCustomField(Field):
 
             tpv = tpv_hw + tpv_zh + tpv_wz
             density_color = self.density_net(tpv).permute(0, 4, 1, 2, 3)
-        self.density_color = density_color.to(dtype)
+        self.density_color = density_color#.to(dtype)
         
     def forward_geonetwork(self, inputs):
         """forward the geonetwork"""
