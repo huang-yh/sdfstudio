@@ -853,7 +853,7 @@ class NeuSSampler(Sampler):
         ray_bundle: Optional[RayBundle] = None,
         sdf_fn: Optional[Callable] = None,
         ray_samples: Optional[RaySamples] = None,
-        beta = None,
+        beta=None,
     ) -> Union[Tuple[RaySamples, torch.Tensor], RaySamples]:
         assert ray_bundle is not None
         assert sdf_fn is not None
@@ -884,9 +884,7 @@ class NeuSSampler(Sampler):
                 inv_s = beta
             else:
                 inv_s = base_variance * 2**total_iters
-            alphas = self.rendering_sdf_with_fixed_inv_s(
-                ray_samples, sdf.reshape(ray_samples.shape), inv_s=inv_s
-            )
+            alphas = self.rendering_sdf_with_fixed_inv_s(ray_samples, sdf.reshape(ray_samples.shape), inv_s=inv_s)
 
             weights = ray_samples.get_weights_from_alphas(alphas[..., None])
             weights = torch.cat((weights, torch.zeros_like(weights[:, :1])), dim=1)
@@ -950,6 +948,87 @@ class NeuSSampler(Sampler):
         alpha = (prev_cdf - next_cdf + 1e-5) / (prev_cdf + 1e-5)
 
         return alpha
+
+
+class CustomNeuSSampler(Sampler):
+    """NeuS sampler that uses a sdf network to generate samples with fixed variance value in each iterations."""
+
+    def __init__(
+        self,
+        num_samples: int = 64,
+        num_samples_importance: int = 64,
+        num_samples_outside: int = 32,
+        num_upsample_steps: int = 4,
+        base_variance: float = 64,
+        single_jitter: bool = True,
+    ) -> None:
+        super().__init__()
+        self.num_samples_unif = num_samples
+        self.num_samples_disp = num_samples_importance
+        self.single_jitter = single_jitter
+
+        # samplers
+        self.uniform_sampler = UniformSampler(single_jitter=single_jitter)
+        self.disparity_sampler = LinearDisparitySampler(single_jitter=single_jitter)
+
+    def generate_ray_samples(
+        self,
+        ray_bundle: Optional[RayBundle] = None,
+        sdf_fn: Optional[Callable] = None,
+        ray_samples: Optional[RaySamples] = None,
+    ) -> Union[Tuple[RaySamples, torch.Tensor], RaySamples]:
+        assert ray_bundle is not None
+        assert ray_samples is None
+
+        # Start with uniform sampling
+        ray_samples_unif = self.uniform_sampler(ray_bundle, num_samples=self.num_samples_unif)
+        ray_samples_disp = self.disparity_sampler(ray_bundle, num_samples=self.num_samples_disp)
+
+        ray_samples, sorted_index = self.merge_ray_samples(ray_bundle, ray_samples_unif, ray_samples_disp)
+
+        return ray_samples
+
+    def merge_ray_samples(self, ray_bundle: RayBundle, ray_samples_1: RaySamples, ray_samples_2: RaySamples):
+        """Merge two set of ray samples and return sorted index which can be used to merge sdf values
+
+        Args:
+            ray_samples_1 : ray_samples to merge
+            ray_samples_2 : ray_samples to merge
+        """
+
+        # starts_1 = ray_samples_1.spacing_starts[..., 0] # bs, S
+        # starts_2 = ray_samples_2.spacing_starts[..., 0] # bs, S
+        # starts_1_euc = ray_samples_1.spacing_to_euclidean_fn(starts_1)
+        # starts_2_euc = ray_samples_2.spacing_to_euclidean_fn(starts_2)
+        starts_1_euc = ray_samples_1.frustums.starts[..., 0]  # bs, S
+        starts_2_euc = ray_samples_2.frustums.starts[..., 0]
+
+        ends_euc = torch.maximum(
+            # ray_samples_1.spacing_to_euclidean_fn(ray_samples_1.spacing_ends[..., -1:, 0]),
+            # ray_samples_2.spacing_to_euclidean_fn(ray_samples_2.spacing_ends[..., -1:, 0]),
+            ray_samples_1.frustums.ends[..., -1:, 0],  # bs, 1
+            ray_samples_2.frustums.ends[..., -1:, 0],
+        )  # bs, 1
+
+        bins_euc, sorted_index = torch.sort(torch.cat([starts_1_euc, starts_2_euc], -1), -1)
+
+        bins_euc = torch.cat([bins_euc, ends_euc], dim=-1)
+
+        # Stop gradients
+        bins_euc = bins_euc.detach()
+
+        # euclidean_bins = ray_samples_1.spacing_to_euclidean_fn(bins)
+        bins = (bins_euc - ray_bundle.nears) / (ray_bundle.fars - ray_bundle.nears + 1e-6)
+
+        ray_samples = ray_bundle.get_ray_samples(
+            bin_starts=bins_euc[..., :-1, None],
+            bin_ends=bins_euc[..., 1:, None],
+            spacing_starts=bins[..., :-1, None],
+            spacing_ends=bins[..., 1:, None],
+            spacing_to_euclidean_fn=ray_samples_1.spacing_to_euclidean_fn,
+        )
+
+        return ray_samples, sorted_index
 
 
 class UniSurfSampler(Sampler):

@@ -33,7 +33,7 @@ from nerfstudio.cameras.rays import RayBundle
 #     TrainingCallbackLocation,
 # )
 from nerfstudio.field_components.field_heads import FieldHeadNames
-from nerfstudio.model_components.ray_samplers import NeuSSampler
+from nerfstudio.model_components.ray_samplers import NeuSSampler, CustomNeuSSampler
 from nerfstudio.models.base_surface_model import SurfaceModel, SurfaceModelConfig
 from nerfstudio.fields.sdf_custom_field import SDFCustomFieldConfig
 
@@ -73,6 +73,8 @@ class NeuSCustomModelConfig(SurfaceModelConfig):
     aabb_every_iters: int = 3516
     aabb_original: List[float] = field(default_factory=lambda: [-81.0, -81.0, -4.0, 81.0, 81.0, 12.0])
 
+    disp_sampler: bool = False
+
 
 class NeuSCustomModel(SurfaceModel):
     """NeuS model
@@ -91,7 +93,8 @@ class NeuSCustomModel(SurfaceModel):
             f"NeuSCustomModel Config: num_samples {self.config.num_samples}, num_samples_importance {self.config.num_samples_importance}, num_up_sample_steps {self.config.num_up_sample_steps}"
         )
 
-        self.sampler = NeuSSampler(
+        sampler_class = CustomNeuSSampler if self.config.disp_sampler else NeuSSampler
+        self.sampler = sampler_class(
             num_samples=self.config.num_samples,
             num_samples_importance=self.config.num_samples_importance,
             # flag
