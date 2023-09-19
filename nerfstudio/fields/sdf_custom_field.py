@@ -635,12 +635,13 @@ class SDFCustomField(Field):
             sdf, geo_feature = torch.split(h, [1, self.color_dims], dim=-1)
 
         if self.config.use_numerical_gradients:
-            gradients = self.gradient(
-                inputs,
-                skip_spatial_distortion=True,
-                # return_sdf=True,
-                return_sdf=False,
-            )
+            with torch.enable_grad():
+                gradients = self.gradient(
+                    inputs,
+                    skip_spatial_distortion=True,
+                    # return_sdf=True,
+                    return_sdf=False,
+                )
             # sampled_sdf = (
             #     sampled_sdf.view(-1, *ray_samples.frustums.directions.shape[:-1]).permute(1, 2, 0).contiguous()
             # )
@@ -654,23 +655,23 @@ class SDFCustomField(Field):
                 retain_graph=True,
                 only_inputs=True,
             )[0]
-            if self.config.second_derivative:
-                second_grads = []
-                for idx in range(3):
-                    with torch.enable_grad():
-                        g_slice = gradients[..., idx]
-                    d_output = torch.ones_like(gradients[..., idx], requires_grad=False, device=sdf.device)
-                    second_grad = torch.autograd.grad(
-                        outputs=g_slice,
-                        inputs=inputs,
-                        grad_outputs=d_output,
-                        create_graph=True,
-                        retain_graph=True,
-                        only_inputs=True,
-                    )[0]
-                    second_grads.append(second_grad)
-                second_grad = torch.stack(second_grads, dim=-1)
-            sampled_sdf = None
+        if self.config.second_derivative:
+            second_grads = []
+            for idx in range(3):
+                with torch.enable_grad():
+                    g_slice = gradients[..., idx]
+                d_output = torch.ones_like(gradients[..., idx], requires_grad=False, device=sdf.device)
+                second_grad = torch.autograd.grad(
+                    outputs=g_slice,
+                    inputs=inputs,
+                    grad_outputs=d_output,
+                    create_graph=True,
+                    retain_graph=True,
+                    only_inputs=True,
+                )[0]
+                second_grads.append(second_grad)
+            second_grad = torch.stack(second_grads, dim=-1)
+            # sampled_sdf = None
 
         rgb = self.get_colors(inputs, directions_flat, gradients, geo_feature)
 
