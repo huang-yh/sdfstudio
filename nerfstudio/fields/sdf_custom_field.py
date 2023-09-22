@@ -317,6 +317,9 @@ class SDFCustomFieldConfig(FieldConfig):
     second_derivative: bool = False
     tpv: bool = False
 
+    nbr_gradient_points: int = 128 * 128 * 16
+    use_uniform_gradient: bool = False
+
 
 class SDFCustomField(Field):
     """_summary_
@@ -608,6 +611,50 @@ class SDFCustomField(Field):
             rgb = torch.empty((geo_features.shape[0], 0), device=geo_features.device, dtype=geo_features.dtype)
         return rgb
 
+    def get_uniform_gradient(self):
+        inputs = torch.rand(self.config.nbr_gradient_points, 3, device=self.aabb.device)
+        inputs[:, 0] = inputs[:, 0] * (self.aabb[1, 0] - self.aabb[0, 0]) + self.aabb[0, 0]
+        inputs[:, 1] = inputs[:, 1] * (self.aabb[1, 1] - self.aabb[0, 1]) + self.aabb[0, 1]
+        inputs[:, 2] = inputs[:, 2] * (self.aabb[1, 2] - self.aabb[0, 2]) + self.aabb[0, 2]
+
+        inputs.requires_grad_(True)
+        self.density_color.requires_grad_(True)
+        with torch.enable_grad():
+            sdf = self.forward_sdfnetwork(inputs)
+
+        if self.config.use_numerical_gradients:
+            with torch.enable_grad():
+                gradients = self.gradient(inputs, skip_spatial_distortion=True, return_sdf=False)
+        else:
+            d_output = torch.ones_like(sdf, requires_grad=False, device=sdf.device)
+            gradients = torch.autograd.grad(
+                outputs=sdf,
+                inputs=inputs,
+                grad_outputs=d_output,
+                create_graph=True,
+                retain_graph=True,
+                only_inputs=True,
+            )[0]
+
+        second_grad = None
+        if self.config.second_derivative:
+            second_grads = []
+            for idx in range(3):
+                with torch.enable_grad():
+                    g_slice = gradients[..., idx]
+                d_output = torch.ones_like(gradients[..., idx], requires_grad=False, device=sdf.device)
+                second_grad = torch.autograd.grad(
+                    outputs=g_slice,
+                    inputs=inputs,
+                    grad_outputs=d_output,
+                    create_graph=True,
+                    retain_graph=True,
+                    only_inputs=True,
+                )[0]
+                second_grads.append(second_grad)
+            second_grad = torch.stack(second_grads, dim=-1)
+        return gradients, second_grad
+
     def get_outputs(self, ray_samples: RaySamples, return_alphas=False, return_occupancy=False):
         """compute output of ray samples"""
         # if ray_samples.camera_indices is None:
@@ -709,11 +756,79 @@ class SDFCustomField(Field):
 
         return outputs
 
+    def get_outputs_recompute_gradient(self, ray_samples: RaySamples, return_alphas=False, return_occupancy=False):
+        """compute output of ray samples"""
+        outputs = {}
+
+        inputs = ray_samples.frustums.get_start_positions()
+        inputs = inputs.view(-1, 3)
+
+        directions = ray_samples.frustums.directions
+        directions_flat = directions.reshape(-1, 3)
+
+        # assert self.spatial_distortion is None
+        if self.spatial_distortion is not None:
+            inputs = self.spatial_distortion(inputs)
+        points_norm = inputs.norm(dim=-1)
+        # compute gradient in constracted space
+        if self.config.use_numerical_gradients:
+            h = self.forward_geonetwork(inputs)
+            sdf, geo_feature = torch.split(h, [1, self.color_dims], dim=-1)
+            gradients = self.gradient(inputs, skip_spatial_distortion=True, return_sdf=False)
+            gradients = gradients.detach()
+        else:
+            inputs.requires_grad_(True)
+            with torch.enable_grad():
+                h = self.forward_geonetwork(inputs)
+                sdf, geo_feature = torch.split(h, [1, self.color_dims], dim=-1)
+
+            d_output = torch.ones_like(sdf, requires_grad=False, device=sdf.device)
+            gradients = torch.autograd.grad(outputs=sdf, inputs=inputs, grad_outputs=d_output, retain_graph=True)[0]
+
+        sampled_grad, second_grad = self.get_uniform_gradient()
+
+        rgb = self.get_colors(inputs, directions_flat, gradients, geo_feature)
+        rgb = rgb.view(*ray_samples.frustums.directions.shape[:-1], -1)
+        sdf = sdf.view(*ray_samples.frustums.directions.shape[:-1], -1)
+        gradients = gradients.view(*ray_samples.frustums.directions.shape[:-1], -1)
+        normals = F.normalize(gradients, p=2, dim=-1)
+        points_norm = points_norm.view(*ray_samples.frustums.directions.shape[:-1], -1)
+
+        outputs.update(
+            {
+                FieldHeadNames.RGB: rgb,
+                FieldHeadNames.SDF: sdf,
+                FieldHeadNames.NORMAL: normals,
+                FieldHeadNames.GRADIENT: sampled_grad,
+                "points_norm": points_norm,
+            }
+        )
+        if self.config.second_derivative:
+            outputs.update({"second_grad": second_grad})
+
+        if return_alphas:
+            # TODO use mid point sdf for NeuS
+            alphas = self.get_alpha(ray_samples, sdf, gradients)
+            outputs.update({FieldHeadNames.ALPHA: alphas})
+
+        if return_occupancy:
+            occupancy = self.get_occupancy(sdf)
+            outputs.update({FieldHeadNames.OCCUPANCY: occupancy})
+
+        return outputs
+
     def forward(self, ray_samples: RaySamples, return_alphas=False, return_occupancy=False):
         """Evaluates the field at points along the ray.
 
         Args:
             ray_samples: Samples to evaluate field on.
         """
-        field_outputs = self.get_outputs(ray_samples, return_alphas=return_alphas, return_occupancy=return_occupancy)
+        if self.config.use_uniform_gradient:
+            field_outputs = self.get_outputs_recompute_gradient(
+                ray_samples, return_alphas=return_alphas, return_occupancy=return_occupancy
+            )
+        else:
+            field_outputs = self.get_outputs(
+                ray_samples, return_alphas=return_alphas, return_occupancy=return_occupancy
+            )
         return field_outputs
