@@ -320,6 +320,9 @@ class SDFCustomFieldConfig(FieldConfig):
     nbr_gradient_points: int = 128 * 128 * 16
     use_uniform_gradient: bool = False
 
+    calculate_online: bool = False
+    sample_gradient: bool = False
+
 
 class SDFCustomField(Field):
     """_summary_
@@ -412,6 +415,10 @@ class SDFCustomField(Field):
         self._cos_anneal_ratio = 1.0
         self.numerical_gradients_delta = 0.0001
 
+        if self.config.sample_gradient:
+            assert not self.config.calculate_online
+            self.pad = nn.ReplicationPad3d(1)
+
     def set_cos_anneal_ratio(self, anneal: float) -> None:
         """Set the anneal value for the proposal network."""
         self._cos_anneal_ratio = anneal
@@ -421,6 +428,9 @@ class SDFCustomField(Field):
     #     self.hash_encoding_mask[level * self.features_per_level :] = 0
 
     def pre_compute_density_color(self, bev, dtype=torch.float):
+        if self.config.calculate_online:
+            self.density_color = torch.cat(bev, dim=1) if self.config.tpv else bev.clone()
+            return
         if not self.config.tpv:
             assert bev.dim() == 3
             bev = bev.unflatten(1, (self.h_size, self.w_size))
@@ -440,46 +450,130 @@ class SDFCustomField(Field):
             tpv = tpv_hw + tpv_zh + tpv_wz
             density_color = self.density_net(tpv).permute(0, 4, 1, 2, 3)
         self.density_color = density_color  # .to(dtype)
+        
+        if self.config.sample_gradient:
+            sdf = self.density_color[:, :1, ...].clone()
+            self.gradients = self.first_order_derivative(sdf) # bs, 3, h, w, d
+
+            if self.config.second_derivative:
+                g2_x = self.first_order_derivative(self.gradients[:, :1, ...].clone())
+                g2_y = self.first_order_derivative(self.gradients[:, 1:2, ...].clone())
+                g2_z = self.first_order_derivative(self.gradients[:, 2:, ...].clone())
+                self.gradients2 = torch.stack([g2_x, g2_y, g2_z], dim=1) # bs, 3, 3, h, w, d
+
+    def first_order_derivative(self, sdf):
+        # sdf: bs, 1, h, w, d
+        sdf = self.pad(sdf) 
+        grad_x = sdf[:, :, 1:-1, 2:, 1:-1] - sdf[:, :, 1:-1, :-2, 1:-1]
+        grad_x = grad_x / (self.aabb[1, 0] - self.aabb[0, 0]) * (self.w_size - 1) / 2
+
+        grad_y = sdf[:, :, 2:, 1:-1, 1:-1] - sdf[:, :, :-2, 1:-1, 1:-1]
+        grad_y = grad_y / (self.aabb[1, 1] - self.aabb[0, 1]) * (self.h_size - 1) / 2
+
+        grad_z = sdf[:, :, 1:-1, 1:-1, 2:] - sdf[:, :, 1:-1, 1:-1, :-2]
+        grad_z = grad_z / (self.aabb[1, 2] - self.aabb[0, 2]) * (self.z_size - 1) / 2
+        gradients = torch.cat([grad_x, grad_y, grad_z], dim=1) # bs, 3, h, w, d
+        return gradients
+
+    def forward_geonetwork_online(self, inputs):
+        grid = self.mapping.meter2grid(inputs, True)
+        grid = grid[None, None, ...] * 2 - 1
+
+        if self.config.tpv:
+            tpv_hw, tpv_zh, tpv_wz = self.density_color.split(
+                [self.h_size*self.w_size, self.z_size*self.h_size, self.w_size*self.z_size], dim=1)
+            tpv_hw = tpv_hw.reshape(-1, self.h_size, self.w_size, self.embed_dims).permute(0, 3, 1, 2)
+            tpv_zh = tpv_zh.reshape(-1, self.z_size, self.h_size, self.embed_dims).permute(0, 3, 1, 2)
+            tpv_wz = tpv_wz.reshape(-1, self.w_size, self.z_size, self.embed_dims).permute(0, 3, 1, 2)
+            tpv_hw = cudagrid.grid_sample_2d(
+                tpv_hw, grid[..., [1, 0]], align_corners=True, padding_mode="border"
+            ).reshape(self.embed_dims, inputs.shape[0]).transpose(0, 1) # n, c
+            tpv_zh = cudagrid.grid_sample_2d(
+                tpv_zh, grid[..., [0, 2]], align_corners=True, padding_mode="border"
+            ).reshape(self.embed_dims, inputs.shape[0]).transpose(0, 1) # n, c
+            tpv_wz = cudagrid.grid_sample_2d(
+                tpv_wz, grid[..., [2, 1]], align_corners=True, padding_mode="border"
+            ).reshape(self.embed_dims, inputs.shape[0]).transpose(0, 1) # n, c
+            tpv = tpv_hw + tpv_zh + tpv_wz
+            density_color = self.density_net(tpv)
+            return density_color
+        else:
+            bev = self.density_color
+            bev = bev.unflatten(1, (self.h_size, self.w_size)).permute(0, 3, 1, 2) # bs, c, h, w
+            bev = cudagrid.grid_sample_2d(
+                bev, grid[..., [1, 0]], align_corners=True, padding_mode="border"
+            ).reshape(self.embed_dims, inputs.shape[0]).transpose(0, 1) # n, c
+            density_color = self.density_net(bev).reshape(inputs.shape[0], 1, self.z_size, -1)
+            density_color = density_color.permute(0, 3, 1, 2)
+            sample_grid = torch.stack([grid[..., 2], torch.zeros_like(grid[..., 2])], dim=-1) # 1, 1, n, 2
+            sample_grid = sample_grid.permute(2, 0, 1, 3) # n, 1, 1, 2
+            density_color = cudagrid.grid_sample_2d(
+                density_color, sample_grid, align_corners=True, padding_mode="border"
+            ).reshape(inputs.shape[0], -1) # n, c
+            return density_color
+
+    def forward_sdfnetwork_online(self, inputs):
+        grid = self.mapping.meter2grid(inputs, True)
+        grid = grid[None, None, ...] * 2 - 1 # 1, 1, n, 3
+
+        if self.config.tpv:
+            tpv_hw, tpv_zh, tpv_wz = self.density_color.split(
+                [self.h_size*self.w_size, self.z_size*self.h_size, self.w_size*self.z_size], dim=1)
+            tpv_hw = tpv_hw.reshape(-1, self.h_size, self.w_size, self.embed_dims).permute(0, 3, 1, 2)
+            tpv_zh = tpv_zh.reshape(-1, self.z_size, self.h_size, self.embed_dims).permute(0, 3, 1, 2)
+            tpv_wz = tpv_wz.reshape(-1, self.w_size, self.z_size, self.embed_dims).permute(0, 3, 1, 2)
+            tpv_hw = cudagrid.grid_sample_2d(
+                tpv_hw, grid[..., [1, 0]], align_corners=True, padding_mode="border"
+            ).reshape(self.embed_dims, inputs.shape[0]).transpose(0, 1) # n, c
+            tpv_zh = cudagrid.grid_sample_2d(
+                tpv_zh, grid[..., [0, 2]], align_corners=True, padding_mode="border"
+            ).reshape(self.embed_dims, inputs.shape[0]).transpose(0, 1) # n, c
+            tpv_wz = cudagrid.grid_sample_2d(
+                tpv_wz, grid[..., [2, 1]], align_corners=True, padding_mode="border"
+            ).reshape(self.embed_dims, inputs.shape[0]).transpose(0, 1) # n, c
+            tpv = tpv_hw + tpv_zh + tpv_wz
+            density_color = self.density_net(tpv)
+            return density_color[:, :1]
+        else:
+            bev = self.density_color
+            bev = bev.unflatten(1, (self.h_size, self.w_size)).permute(0, 3, 1, 2) # bs, c, h, w
+            bev = cudagrid.grid_sample_2d(
+                bev, grid[..., [1, 0]], align_corners=True, padding_mode="border"
+            ).reshape(self.embed_dims, inputs.shape[0]).transpose(0, 1) # n, c
+            density_color = self.density_net(bev).reshape(inputs.shape[0], 1, self.z_size, -1)[..., :1]
+            density_color = density_color.permute(0, 3, 1, 2)
+            sample_grid = torch.stack([grid[..., 2], torch.zeros_like(grid[..., 2])], dim=-1) # 1, 1, n, 2
+            sample_grid = sample_grid.permute(2, 0, 1, 3) # n, 1, 1, 2
+            density_color = cudagrid.grid_sample_2d(
+                density_color, sample_grid, align_corners=True, padding_mode="border"
+            ).reshape(inputs.shape[0], -1) # n, c
+            return density_color
 
     def forward_geonetwork(self, inputs):
         """forward the geonetwork"""
-        grid = self.mapping.meter2grid(inputs, True)
-
-        # grid[..., :2] = grid[..., :2] / (self.bev_size - 1)
-        # grid[..., 2:] = grid[..., 2:] / (self.z_size - 1)
-        grid = 2 * grid - 1
-        grid = grid.reshape(1, -1, 1, 1, 3).to(self.density_color.dtype)
-
-        # density_color = F.grid_sample(
-        #     self.density_color, grid[..., [2, 1, 0]], mode="bilinear", align_corners=True
-        # )  # bs, c, n, 1, 1
-        density_color = cudagrid.grid_sample_3d(
-            self.density_color, grid[..., [2, 1, 0]], align_corners=True, padding_mode="border"
-        )  # bs, c, n, 1, 1
-
-        density_color = density_color.permute(0, 2, 3, 4, 1).flatten(0, 3)  # bs*n, c
-        # sigma = density_color[:, :1]
-        return density_color  # F.relu(sigma)
-
+        if self.config.calculate_online:
+            return self.forward_geonetwork_online(inputs)
+        return self.sample_something(inputs, self.density_color)
+    
     def forward_sdfnetwork(self, inputs):
         """forward the geonetwork"""
+        if self.config.calculate_online:
+            return self.forward_sdfnetwork_online(inputs)
+        return self.sample_something(inputs, self.density_color[:, :1, ...])
+    
+    def sample_something(self, inputs, tensor):
+        # tensor: bs, c, h, w, d
         grid = self.mapping.meter2grid(inputs, True)
 
-        # grid[..., :2] = grid[..., :2] / (self.bev_size - 1)
-        # grid[..., 2:] = grid[..., 2:] / (self.z_size - 1)
         grid = 2 * grid - 1
-        grid = grid.reshape(1, -1, 1, 1, 3).to(self.density_color.dtype)
+        grid = grid.reshape(1, -1, 1, 1, 3).to(tensor.dtype)
 
-        # density_color = F.grid_sample(
-        #     self.density_color[:, :1, ...], grid[..., [2, 1, 0]], mode="bilinear", align_corners=True
-        # )  # bs, c, n, 1, 1
-        density_color = cudagrid.grid_sample_3d(
-            self.density_color[:, :1, ...], grid[..., [2, 1, 0]], align_corners=True, padding_mode="border"
+        sampled = cudagrid.grid_sample_3d(
+            tensor, grid[..., [2, 1, 0]], align_corners=True, padding_mode="border"
         )  # bs, c, n, 1, 1
 
-        density_color = density_color.permute(0, 2, 3, 4, 1).flatten(0, 3)  # bs*n, c
-        # sigma = density_color[:, :1]
-        return density_color  # F.relu(sigma)
+        sampled = sampled.permute(0, 2, 3, 4, 1).flatten(0, 3)  # bs*n, c
+        return sampled
 
     def get_sdf(self, ray_samples: RaySamples):
         """predict the sdf value for ray samples"""
@@ -817,6 +911,58 @@ class SDFCustomField(Field):
 
         return outputs
 
+    def get_outputs_sample_gradient(self, ray_samples: RaySamples, return_alphas=False, return_occupancy=False):
+        """compute output of ray samples"""
+        outputs = {}
+
+        inputs = ray_samples.frustums.get_start_positions()
+        inputs = inputs.view(-1, 3)
+
+        directions = ray_samples.frustums.directions
+        directions_flat = directions.reshape(-1, 3)
+
+        if self.spatial_distortion is not None:
+            inputs = self.spatial_distortion(inputs)
+        points_norm = inputs.norm(dim=-1)
+        # compute gradient in constracted space
+        h = self.forward_geonetwork(inputs)
+        sdf, geo_feature = torch.split(h, [1, self.color_dims], dim=-1)
+
+        gradients = self.sample_something(inputs, self.gradients) # n, 3
+
+        rgb = self.get_colors(inputs, directions_flat, gradients, geo_feature)
+        rgb = rgb.view(*ray_samples.frustums.directions.shape[:-1], -1)
+        sdf = sdf.view(*ray_samples.frustums.directions.shape[:-1], -1)
+        gradients = gradients.view(*ray_samples.frustums.directions.shape[:-1], -1)
+        normals = F.normalize(gradients, p=2, dim=-1)
+        points_norm = points_norm.view(*ray_samples.frustums.directions.shape[:-1], -1)
+
+        outputs.update(
+            {
+                FieldHeadNames.RGB: rgb,
+                FieldHeadNames.SDF: sdf,
+                FieldHeadNames.NORMAL: normals,
+                FieldHeadNames.GRADIENT: torch.cat([
+                    gradients.reshape(-1, 3),
+                    self.gradients.reshape(3, -1).transpose(0, 1)
+                ], dim=0),
+                "points_norm": points_norm,
+            }
+        )
+        if self.config.second_derivative:
+            outputs.update({"second_grad": self.gradients2.flatten(1, 2).flatten(2).transpose(-1, -2)})
+
+        if return_alphas:
+            # TODO use mid point sdf for NeuS
+            alphas = self.get_alpha(ray_samples, sdf, gradients)
+            outputs.update({FieldHeadNames.ALPHA: alphas})
+
+        if return_occupancy:
+            occupancy = self.get_occupancy(sdf)
+            outputs.update({FieldHeadNames.OCCUPANCY: occupancy})
+
+        return outputs
+
     def forward(self, ray_samples: RaySamples, return_alphas=False, return_occupancy=False):
         """Evaluates the field at points along the ray.
 
@@ -825,6 +971,10 @@ class SDFCustomField(Field):
         """
         if self.config.use_uniform_gradient:
             field_outputs = self.get_outputs_recompute_gradient(
+                ray_samples, return_alphas=return_alphas, return_occupancy=return_occupancy
+            )
+        elif self.config.sample_gradient:
+            field_outputs = self.get_outputs_sample_gradient(
                 ray_samples, return_alphas=return_alphas, return_occupancy=return_occupancy
             )
         else:
