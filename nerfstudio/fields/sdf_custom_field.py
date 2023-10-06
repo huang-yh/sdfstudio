@@ -52,6 +52,7 @@ except ImportError:
 from .cuda_gridsample_grad2 import cuda_gridsample as cudagrid
 from .mappings import GridMeterMapping
 from .sh_render import SHRender
+from .utils import sample_from_2d_img_feats
 
 # class GridMeterMapping:
 #     def __init__(
@@ -323,6 +324,8 @@ class SDFCustomFieldConfig(FieldConfig):
     calculate_online: bool = False
     sample_gradient: bool = False
 
+    using_2d_img_feats: bool = False
+
 
 class SDFCustomField(Field):
     """_summary_
@@ -419,6 +422,29 @@ class SDFCustomField(Field):
             assert not self.config.calculate_online
             self.pad = nn.ReplicationPad3d(1)
 
+        if self.config.using_2d_img_feats:
+            assert not self.config.calculate_online
+            assert self.config.tpv
+            grid_coords = torch.stack(
+                [
+                    torch.arange(self.h_size).expand(-1, self.w_size, self.z_size),
+                    torch.arange(self.w_size).expand(self.h_size, -1, self.z_size),
+                    torch.arange(self.z_size).expand(self.h_size, self.w_size, -1),
+                ],
+                dim=-1,
+            ).flatten(0, 2)
+            meter_coords = self.mapping.grid2meter(grid_coords)  # hwd, 3
+            self.register_buffer("sampling_points_2d", meter_coords, False)
+
+            ## build UpsampleFPN
+            from mmdet3d.models.necks import SECONDFPN
+
+            self.img_skip_model = SECONDFPN(
+                in_channels=[self.embed_dims] * 4,
+                out_channels=[self.embed_dims // 4] * 4,
+                upsample_strides=[1, 2, 4, 8],
+            )
+
     def set_cos_anneal_ratio(self, anneal: float) -> None:
         """Set the anneal value for the proposal network."""
         self._cos_anneal_ratio = anneal
@@ -427,9 +453,21 @@ class SDFCustomField(Field):
     #     self.hash_encoding_mask[:] = 1.0
     #     self.hash_encoding_mask[level * self.features_per_level :] = 0
 
-    def pre_compute_density_color(self, bev, dtype=torch.float, img_feats=None):
-        # if img_feats is not None:
-        # img_feats_3d = sample_from_2d_img_feats(img_feats, img_metas, self.sampling_points_2d)
+    def pre_compute_density_color(
+        self,
+        bev,
+        dtype=torch.float,
+        img_feats=None,
+        img_metas=None,
+    ):
+        if self.config.using_2d_img_feats:
+            assert img_feats is not None and img_metas is not None
+            bs, num_cams = img_feats[0].shape[0:2]
+            img_feats = [img_feat.flatten(0, 1) for img_feat in img_feats]
+            img_feats = self.img_skip_model(img_feats)
+            img_feats = img_feats.unflatten(0, [bs, num_cams])
+            img_feats_3d = sample_from_2d_img_feats(img_feats, img_metas, self.sampling_points_2d)
+            img_feats_3d = img_feats_3d.unflatten(1, [self.h_size, self.w_size, self.z_size])
         if self.config.calculate_online:
             self.density_color = torch.cat(bev, dim=1) if self.config.tpv else bev.clone()
             return
@@ -450,6 +488,9 @@ class SDFCustomField(Field):
             tpv_wz = tpv_wz.expand(-1, self.h_size, -1, -1, -1)
 
             tpv = tpv_hw + tpv_zh + tpv_wz
+            ## TODO: temporarily using addition to fuse
+            if self.config.using_2d_img_feats:
+                tpv = tpv + img_feats_3d
             density_color = self.density_net(tpv).permute(0, 4, 1, 2, 3)
         self.density_color = density_color  # .to(dtype)
 
