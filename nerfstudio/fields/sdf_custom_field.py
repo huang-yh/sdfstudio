@@ -427,9 +427,9 @@ class SDFCustomField(Field):
             assert self.config.tpv
             grid_coords = torch.stack(
                 [
-                    torch.arange(self.h_size).expand(-1, self.w_size, self.z_size),
-                    torch.arange(self.w_size).expand(self.h_size, -1, self.z_size),
-                    torch.arange(self.z_size).expand(self.h_size, self.w_size, -1),
+                    torch.arange(self.h_size)[:, None, None].expand(-1, self.w_size, self.z_size),
+                    torch.arange(self.w_size)[None, :, None].expand(self.h_size, -1, self.z_size),
+                    torch.arange(self.z_size)[None, None, :].expand(self.h_size, self.w_size, -1),
                 ],
                 dim=-1,
             ).flatten(0, 2)
@@ -465,7 +465,7 @@ class SDFCustomField(Field):
             bs, num_cams = img_feats[0].shape[0:2]
             img_feats = [img_feat.flatten(0, 1) for img_feat in img_feats]
             img_feats = self.img_skip_model(img_feats)
-            img_feats = img_feats.unflatten(0, [bs, num_cams])
+            img_feats = img_feats[0].unflatten(0, [bs, num_cams])
             img_feats_3d = sample_from_2d_img_feats(img_feats, img_metas, self.sampling_points_2d)
             img_feats_3d = img_feats_3d.unflatten(1, [self.h_size, self.w_size, self.z_size])
         if self.config.calculate_online:
