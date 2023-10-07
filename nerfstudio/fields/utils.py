@@ -107,7 +107,7 @@ def sample_from_2d_img_feats(img_feats, img_metas, sampling_points_2d):
     feats_3d = (
         F.grid_sample(
             img_feats.flatten(0, 1),  # bs * N, C, H, W
-            reference_points_rebatch.unsqueeze(1),  # bs*N, 1, L, 2
+            reference_points_rebatch.unsqueeze(1) * 2 - 1,  # bs*N, 1, L, 2
             mode="bilinear",
             align_corners=True,
         )
