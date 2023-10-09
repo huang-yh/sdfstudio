@@ -323,6 +323,7 @@ class SDFCustomFieldConfig(FieldConfig):
 
     calculate_online: bool = False
     sample_gradient: bool = False
+    use_compact_2nd_grad: bool = False
 
     using_2d_img_feats: bool = False
 
@@ -499,10 +500,13 @@ class SDFCustomField(Field):
             self.gradients = self.first_order_derivative(sdf)  # bs, 3, h, w, d
 
             if self.config.second_derivative:
-                g2_x = self.first_order_derivative(self.gradients[:, :1, ...].clone())
-                g2_y = self.first_order_derivative(self.gradients[:, 1:2, ...].clone())
-                g2_z = self.first_order_derivative(self.gradients[:, 2:, ...].clone())
-                self.gradients2 = torch.stack([g2_x, g2_y, g2_z], dim=1)  # bs, 3, 3, h, w, d
+                if self.config.use_compact_2nd_grad:
+                    self.gradients2 = self.second_order_derivative(sdf=sdf)
+                else:
+                    g2_x = self.first_order_derivative(self.gradients[:, :1, ...].clone())
+                    g2_y = self.first_order_derivative(self.gradients[:, 1:2, ...].clone())
+                    g2_z = self.first_order_derivative(self.gradients[:, 2:, ...].clone())
+                    self.gradients2 = torch.stack([g2_x, g2_y, g2_z], dim=1)  # bs, 3, 3, h, w, d
 
     def first_order_derivative(self, sdf):
         # sdf: bs, 1, h, w, d
@@ -517,6 +521,21 @@ class SDFCustomField(Field):
         grad_z = grad_z / (self.aabb[1, 2] - self.aabb[0, 2]) * (self.z_size - 1) / 2
         gradients = torch.cat([grad_x, grad_y, grad_z], dim=1)  # bs, 3, h, w, d
         return gradients
+        
+    def second_order_derivative(self, sdf):
+        # sdf: bs, 1, h, w, d
+        grad_2 = sdf.new_zeros(sdf.shape[0], 3, 3, *sdf.shape[2:])
+        sdf = self.pad(sdf)
+        x_1 = sdf[:, :, :, 1:, :] - sdf[:, :, :, :-1, :]
+        x_2 = x_1[:, :, :, 1:, :] - x_1[:, :, :, :-1, :]
+        y_1 = sdf[:, :, 1:, :, :] - sdf[:, :, :-1, :, :]
+        y_2 = y_1[:, :, 1:, :, :] - y_1[:, :, :-1, :, :]
+        z_1 = sdf[:, :, :, :, 1:] - sdf[:, :, :, :, :-1]
+        z_2 = z_1[:, :, :, :, 1:] - z_1[:, :, :, :, :-1]
+        grad_2[:, 0, 0] = x_2[:, 0, 1:-1, :, 1:-1]
+        grad_2[:, 1, 1] = y_2[:, 0, :, 1:-1, 1:-1]
+        grad_2[:, 2, 2] = z_2[:, 0, 1:-1, 1:-1, :]
+        return grad_2
 
     def forward_geonetwork_online(self, inputs):
         grid = self.mapping.meter2grid(inputs, True)
