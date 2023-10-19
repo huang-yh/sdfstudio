@@ -306,6 +306,7 @@ class SurfaceModel(Model):
         # depth[~hit] = 10000.0
 
         normal = self.renderer_normal(semantics=field_outputs[FieldHeadNames.NORMAL], weights=weights)
+        normal = F.normalize(normal, p=2, dim=-1)
         accumulation = self.renderer_accumulation(weights=weights)
 
         outputs = {
@@ -321,7 +322,7 @@ class SurfaceModel(Model):
             ),  # used for creating visiblity mask
             "directions_norm": ray_bundle.directions_norm,  # used to scale z_vals for free space and sdf loss
             "inv_s": self.field.deviation_network.get_variance().detach().item(),
-            "fars": fars
+            "fars": fars,
         }
 
         if self.training or True:
