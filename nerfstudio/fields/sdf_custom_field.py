@@ -327,6 +327,8 @@ class SDFCustomFieldConfig(FieldConfig):
 
     using_2d_img_feats: bool = False
 
+    return_sem: bool = False
+
 
 class SDFCustomField(Field):
     """_summary_
@@ -1027,8 +1029,12 @@ class SDFCustomField(Field):
 
         gradients = self.sample_something(inputs, self.gradients)  # n, 3
 
-        rgb = self.get_colors(inputs, directions_flat, gradients, geo_feature)
+        rgb = self.get_colors(inputs, directions_flat, gradients, geo_feature[..., :3])
         rgb = rgb.view(*ray_samples.frustums.directions.shape[:-1], -1)
+        if self.config.return_sem:
+            sem = geo_feature[..., 3:]
+            sem = sem.softmax(dim=-1)
+            sem = sem.view(*ray_samples.frustums.directions.shape[:-1], -1)
         sdf = sdf.view(*ray_samples.frustums.directions.shape[:-1], -1)
         gradients = gradients.view(*ray_samples.frustums.directions.shape[:-1], -1)
         normals = F.normalize(gradients, p=2, dim=-1)
@@ -1056,6 +1062,9 @@ class SDFCustomField(Field):
         if return_occupancy:
             occupancy = self.get_occupancy(sdf)
             outputs.update({FieldHeadNames.OCCUPANCY: occupancy})
+
+        if self.config.return_sem:
+            outputs.update({"sem": sem})
 
         return outputs
 

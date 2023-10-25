@@ -123,6 +123,8 @@ class SurfaceModelConfig(ModelConfig):
     scene_contraction_activate: bool = True
     use_lpips: bool = True
 
+    return_sem: bool = False
+
 
 class SurfaceModel(Model):
     """Base surface model
@@ -208,6 +210,8 @@ class SurfaceModel(Model):
         self.renderer_depth = DepthRenderer(method="expected")
 
         # self.renderer_depth_median = DepthRenderer(method="median")
+        if self.config.return_sem:
+            self.renderer_sem = SemanticRenderer()
 
         self.renderer_normal = SemanticRenderer()
         # patch warping
@@ -294,6 +298,8 @@ class SurfaceModel(Model):
         weights = samples_and_field_outputs["weights"]
 
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+        if self.config.return_sem:
+            sem = self.renderer_sem(semantics=field_outputs["sem"], weights=weights)
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         # depth_median = self.renderer_depth_median(weights=weights, ray_samples=ray_samples)
         # depth_median = depth_median / ray_bundle.directions_norm
@@ -324,6 +330,9 @@ class SurfaceModel(Model):
             "inv_s": self.field.deviation_network.get_variance().detach().item(),
             "fars": fars,
         }
+
+        if self.config.return_sem:
+            outputs.update({"sem": sem})
 
         if self.training or True:
             grad_points = field_outputs[FieldHeadNames.GRADIENT]
